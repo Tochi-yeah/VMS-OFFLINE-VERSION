@@ -1,8 +1,8 @@
 # app/__init__.py
+import sys
+import os
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
-# Temporarily removed 
-#from flask_mail import Mail
 from flask_migrate import Migrate
 from dotenv import load_dotenv
 from flask_wtf import CSRFProtect
@@ -10,78 +10,85 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_socketio import SocketIO
 from flask_login import LoginManager
-import os
 
-load_dotenv()  # Load environment variables from .env file
+# --- CRITICAL IMPORTS FOR THE FIX ---
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
+from sqlalchemy.pool import NullPool  # <--- Disables Connection Pooling
+import sqlite3
+import pytz
+from datetime import datetime
+from dateutil import parser
+# -------------------------------
+
+load_dotenv()
 
 # Global extensions
 db = SQLAlchemy()
-#Removed temporarily
-#mail = Mail()
 migrate = Migrate()
 csrf = CSRFProtect()
-socketio = SocketIO(cors_allowed_origins="*")  # Add this line
-limiter = Limiter(key_func=get_remote_address)  # make global instance
+socketio = SocketIO(cors_allowed_origins="*", async_mode='threading')
+limiter = Limiter(key_func=get_remote_address)
 login_manager = LoginManager()
-login_manager.login_view = "auth.login"  # the name of your login route
+login_manager.login_view = "auth.login"
 
 def create_app():
-    app = Flask(
-        __name__,
-        template_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'templates'),
-         static_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'static')
-    )
-    
-    # Configuration
-    app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    app.config['BREVO_API_KEY'] = os.getenv('BREVO_API_KEY')
-    app.config['RATELIMIT_STORAGE_URI'] = os.getenv("REDIS_URL", "memory://")
-    '''
-    Temporarily removed
-    # Mail Configuration
-    app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-    app.config['MAIL_PORT'] = 587
-    app.config['MAIL_USE_TLS'] = True
-    app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
-    app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
-    app.config['MAIL_DEFAULT_SENDER'] = 'afablejrchito@gmail.com'
-    app.config['RATELIMIT_STORAGE_URI'] = os.getenv("REDIS_URL", "memory://")
-    app.config['MAIL_DEBUG'] = True
-    '''
-    
-    # Connection Pool Management for Render/Eventlet/Psycopg2
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        "pool_size": 10,
-        "max_overflow": 5,
-        "pool_timeout": 30,
-        "pool_recycle": 1800  # recycle connections_
-    }
+    # ---------------------------------------------------------
+    # 1. PATH CONFIGURATION
+    # ---------------------------------------------------------
+    if getattr(sys, 'frozen', False):
+        base_dir = sys._MEIPASS
+        template_dir = os.path.join(base_dir, 'app', 'templates')
+        static_dir = os.path.join(base_dir, 'app', 'static')
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        if os.path.exists(os.path.join(base_dir, 'templates')):
+            template_dir = os.path.join(base_dir, 'templates')
+            static_dir = os.path.join(base_dir, 'static')
+        else:
+            template_dir = os.path.join(base_dir, '..', 'templates')
+            static_dir = os.path.join(base_dir, '..', 'static')
 
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        'pool_pre_ping': True
-    }
-    #Temporarily Removed
-    '''
-    if not app.config['MAIL_USERNAME'] or not app.config['MAIL_PASSWORD']:
-        raise RuntimeError("Missing mail credentials in .env")
-    '''
+    app = Flask(__name__, template_folder=template_dir, static_folder=static_dir)
+    
+# ---------------------------------------------------------
+    # 2. DATABASE CONFIGURATION
+    # ---------------------------------------------------------
+    app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-key-offline')
+    
+    # Check if an external script (like debug_offline.py) provided a database
+    custom_db_url = os.environ.get('DATABASE_URL')
+
+    if custom_db_url:
+        # ✅ CASE 1: Custom Database (PostgreSQL) detected
+        app.config['SQLALCHEMY_DATABASE_URI'] = custom_db_url
+        print(f"⚙️ CUSTOM CONFIG: Using External Database -> {custom_db_url}")
+    
+    elif getattr(sys, 'frozen', False):
+        # 🧊 CASE 2: Frozen Mode (.exe) - Uses Internal SQLite
+        exe_folder = os.path.dirname(sys.executable)
+        db_path = os.path.join(exe_folder, 'vms_offline.db')
+        app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
+        print(f"🔄 OFFLINE MODE: Using database at {db_path}")
+        
+    else:
+        # 🛠️ CASE 3: Standard Debug Mode - Uses Project Root SQLite
+        project_root = os.path.abspath(os.path.join(base_dir, '..'))
+        db_path = os.path.join(project_root, 'vms_offline.db')
+        app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
+        print(f"🛠️ DEBUG MODE: Using database at {db_path}")
 
     # Initialize extensions
     db.init_app(app)
-    #Removed temporarily
-    #mail.init_app(app)
     migrate.init_app(app, db)
     csrf.init_app(app)
     socketio.init_app(app)
     limiter.init_app(app)
     login_manager.init_app(app)
 
-    # Set default rate limits
     limiter.default_limits = ["100 per day", "20 per hour"]
 
-    # Register Blueprints
     from app.routes import main, auth, request, scan, download_log, analytic, profile, download_template
     app.register_blueprint(main.bp)
     app.register_blueprint(auth.bp)
@@ -90,16 +97,64 @@ def create_app():
     app.register_blueprint(download_log.bp)
     app.register_blueprint(analytic.bp)
     app.register_blueprint(profile.bp)
-    app.register_blueprint(download_template.bp) # ✅ Register the new blueprint
+    app.register_blueprint(download_template.bp)
 
     from app.models import User
-
-    # Register Jinja filters
     from app.utils.helpers import convert_to_ph_time_only
     app.jinja_env.filters['ph_time_only'] = convert_to_ph_time_only
+
+    @app.template_filter('format_date')
+    def format_date_filter(value, format="%B %d, %Y"):
+        if not value: return "—"
+        if isinstance(value, str):
+            try:
+                if "." in value: value = value.split(".")[0]
+                dt = parser.parse(value)
+                return dt.strftime(format)
+            except: return value
+        return value.strftime(format)
+
+   # CORRECTED: Commented out for PostgreSQL
+    # if getattr(sys, 'frozen', False):
+    #     with app.app_context():
+    #         db.create_all()
+    #         # Force WAL mode for EXE as well
+    #         db.session.execute("PRAGMA journal_mode=WAL")
+    #         db.session.commit()
 
     @app.teardown_appcontext
     def shutdown_session(exception=None):
         db.session.remove()
 
     return app
+
+# =========================================================
+#  SQLITE CONFIGURATION (WAL MODE + FOREIGN KEYS)
+# =========================================================
+@event.listens_for(Engine, "connect")
+def set_sqlite_functions(dbapi_connection, connection_record):
+    if isinstance(dbapi_connection, sqlite3.Connection):
+        cursor = dbapi_connection.cursor()
+        
+        # ⚡ ENABLE WAL MODE (Fixes locking/phantom writes)
+        cursor.execute("PRAGMA journal_mode=WAL")
+        
+        # Enable Foreign Keys
+        cursor.execute("PRAGMA foreign_keys=ON")
+        
+        cursor.close()
+
+        def sql_timezone(zone, val):
+            if val is None: return None
+            try:
+                val_str = str(val)
+                dt = parser.parse(val_str)
+                if dt.tzinfo is None:
+                    dt = pytz.utc.localize(dt)
+                target_tz = pytz.timezone(zone)
+                local_dt = dt.astimezone(target_tz)
+                return local_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return val
+
+        dbapi_connection.create_function("timezone", 2, sql_timezone)
