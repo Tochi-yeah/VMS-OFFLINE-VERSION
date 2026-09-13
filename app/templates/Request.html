@@ -38,11 +38,12 @@
             <i class="fas fa-search"></i>
             <input type="text" name="search_query" placeholder="Search by name..." value="{{ search_query or '' }}">
           </div>
-          <input type="date" name="filter_date" value="{{ filter_date or '' }}">
+          <input type="date" name="filter_date" value="{{ filter_date or '' }}" title="Filter by exact day">
+          <input type="month" name="filter_month" value="{{ filter_month or '' }}" title="Filter by entire month">
           <button type="submit">
             <i class="fas fa-filter"></i> Apply
           </button>
-          <a href="{{ url_for('request_bp.request_page', filter_date='') }}" class="table-action-btn" style="background-color: var(--danger-color);">
+          <a href="{{ url_for('request_bp.request_page') }}" class="table-action-btn" style="background-color: var(--danger-color);">
             <i class="fas fa-times"></i> Clear
           </a>
         </form>
@@ -148,13 +149,12 @@
           <nav aria-label="Logs pagination">
             <ul class="pagination-list">
               <li class="pagination-item">
-                <!-- MODIFIED: Added per_page to all links -->
-                <a class="pagination-link" href="{{ url_for('request_bp.request_page', page=1, filter_date=filter_date, search_query=search_query, per_page=per_page) }}">
+                <a class="pagination-link" href="{{ url_for('request_bp.request_page', page=1, filter_date=filter_date, filter_month=filter_month, search_query=search_query, per_page=per_page) }}">
                   <i class="fas fa-angle-double-left"></i> First
                 </a>
               </li>
               <li class="pagination-item">
-                <a class="pagination-link" href="{{ url_for('request_bp.request_page', page=pagination.prev_num if pagination.has_prev else 1, filter_date=filter_date, search_query=search_query, per_page=per_page) }}">
+                <a class="pagination-link" href="{{ url_for('request_bp.request_page', page=pagination.prev_num if pagination.has_prev else 1, filter_date=filter_date, filter_month=filter_month, search_query=search_query, per_page=per_page) }}">
                   <i class="fas fa-angle-left"></i> Prev
                 </a>
               </li>
@@ -162,12 +162,12 @@
                 Page {{ pagination.page }} of {{ pagination.pages }}
               </li>
               <li class="pagination-item">
-                <a class="pagination-link" href="{{ url_for('request_bp.request_page', page=pagination.next_num if pagination.has_next else pagination.pages, filter_date=filter_date, search_query=search_query, per_page=per_page) }}">
+                <a class="pagination-link" href="{{ url_for('request_bp.request_page', page=pagination.next_num if pagination.has_next else pagination.pages, filter_date=filter_date, filter_month=filter_month, search_query=search_query, per_page=per_page) }}">
                   Next <i class="fas fa-angle-right"></i>
                 </a>
               </li>
               <li class="pagination-item">
-                <a class="pagination-link" href="{{ url_for('request_bp.request_page', page=pagination.pages, filter_date=filter_date, search_query=search_query, per_page=per_page) }}">
+                <a class="pagination-link" href="{{ url_for('request_bp.request_page', page=pagination.pages, filter_date=filter_date, filter_month=filter_month, search_query=search_query, per_page=per_page) }}">
                   Last <i class="fas fa-angle-double-right"></i>
                 </a>
               </li>
@@ -193,35 +193,6 @@
     </main>
   </div>
 
-  <!--
-  <div id="checkinModal" class="modal-backdrop" style="display: none;">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3 class="modal-title">Confirm Visitor Check-In</h3>
-        <button type="button" class="modal-close" onclick="closeModal()">&times;</button>
-      </div>
-      <div class="modal-body">
-        <p>Checking in visitor: <strong id="modalVisitorName"></strong></p>
-        <form id="modalCheckinForm">
-          <input type="hidden" id="modalUniqueCode" name="unique_code">
-          <div class="form-group">
-            <label for="modalPurposeSelect">Purpose of Visit</label>
-            <select id="modalPurposeSelect" name="modal_purpose_select" class="form-input" required><option value="" disabled>Select Purpose</option><option value="Meeting">Meeting</option><option value="Campus Tour">Campus Tour</option><option value="Event">Event</option><option value="Other">Other</option></select>
-          </div>
-          <div class="form-group" id="modalOtherPurposeContainer" style="display: none;">
-            <label for="modalOtherPurposeInput">Specify Other Purpose</label>
-            <input type="text" id="modalOtherPurposeInput" name="modal_other_purpose" class="form-input">
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="scanner-btn secondary" onclick="closeModal()">Cancel</button>
-            <button type="submit" class="scanner-btn primary">Confirm Check-In</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-  -->
-
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script>
     const socket = io();
@@ -235,7 +206,6 @@
       });
     });
   </script>
-  <!--<script src="{{ url_for('static', filename='js/modal/Check-in-modal.js') }}" defer></script> -->
    {% endblock %}
 </body>
 </html>

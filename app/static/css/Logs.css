@@ -1,4 +1,4 @@
-    :root {
+:root {
       --primary-color: #2563eb;
       --primary-dark: #1e40af;
       --accent-color: #10b981;
@@ -333,7 +333,8 @@
       flex-shrink: 0;
     }
 
-    .filter-form input[type="date"] {
+    .filter-form input[type="date"],
+    .filter-form input[type="month"] {
       padding: 10px 14px;
       border: 1px solid var(--border-color);
       border-radius: 8px;
@@ -373,6 +374,7 @@
     }
 
     .filter-form input[type="date"]:focus,
+    .filter-form input[type="month"]:focus,
     .filter-form input[type="text"]:focus,
     .filter-form select:focus {
       border-color: var(--primary-color);
@@ -699,7 +701,8 @@
       }
       
       .filter-form select,
-      .filter-form input[type="date"] {
+      .filter-form input[type="date"],
+      .filter-form input[type="month"] {
         flex: 1;
         min-width: 120px;
       }

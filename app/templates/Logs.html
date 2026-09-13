@@ -42,7 +42,8 @@
           <i class="fas fa-search"></i>
           <input type="text" name="search_query" placeholder="Search by name" value="{{ search_query }}">
         </div>
-        <input type="date" name="filter_date" value="{{ filter_date }}">
+        <input type="date" name="filter_date" value="{{ filter_date }}" title="Filter by exact day">
+        <input type="month" name="filter_month" value="{{ filter_month }}" title="Filter by entire month">
         <button type="submit">
           <i class="fas fa-filter"></i> Apply
         </button>
@@ -56,7 +57,7 @@
       <div class="table-header">
         <h2 class="table-title">Visitor Logs</h2>
         <div class="table-actions">
-          <a href="{{ url_for('download_log.export_logs_excel', filter_date=filter_date, search_query=search_query) }}" class="table-action-btn">
+          <a href="{{ url_for('download_log.export_logs_excel', filter_date=filter_date, filter_month=filter_month, search_query=search_query) }}" class="table-action-btn">
             <i class="fas fa-file-excel"></i> Export Data
           </a>
         </div>
@@ -88,9 +89,9 @@
               <td>{{ log.destination }}</td>
               <td>{{ log.purpose }}</td>
               <td>{{ log.address }}</td>
-              <td>{{ log.approved_by or '—' }}</td> <!-- ✅ Display Approver's Name -->
+              <td>{{ log.approved_by or '—' }}</td> <!-- Display Approver's Name -->
 
-              <!-- ✅ Check-In with your requested tooltip design -->
+              <!-- Check-In with your requested tooltip design -->
               <td>
                 {% if log.check_in_time %}
                   <span class="status-badge status-in tooltip">
@@ -105,7 +106,7 @@
                   —
                 {% endif %}
               </td>
-              <!-- ✅ Check-Out with your requested tooltip design -->
+              <!-- Check-Out with your requested tooltip design -->
               <td>
                 {% if log.check_out_time %}
                   <span class="status-badge status-out tooltip">
@@ -141,12 +142,12 @@
         <nav aria-label="Logs pagination">
           <ul class="pagination-list">
             <li class="pagination-item">
-              <a class="pagination-link" href="{{ url_for('main.logs', page=1, filter_date=filter_date, search_query=search_query, per_page=per_page) }}">
+              <a class="pagination-link" href="{{ url_for('main.logs', page=1, filter_date=filter_date, filter_month=filter_month, search_query=search_query, per_page=per_page) }}">
                 <i class="fas fa-angle-double-left"></i> First
               </a>
             </li>
             <li class="pagination-item">
-              <a class="pagination-link" href="{{ url_for('main.logs', page=pagination.prev_num, filter_date=filter_date, search_query=search_query, per_page=per_page) }}">
+              <a class="pagination-link" href="{{ url_for('main.logs', page=pagination.prev_num, filter_date=filter_date, filter_month=filter_month, search_query=search_query, per_page=per_page) }}">
                 <i class="fas fa-angle-left"></i> Prev
               </a>
             </li>
@@ -154,12 +155,12 @@
               Page {{ pagination.page }} of {{ pagination.pages }}
             </li>
             <li class="pagination-item">
-              <a class="pagination-link" href="{{ url_for('main.logs', page=pagination.next_num, filter_date=filter_date, search_query=search_query, per_page=per_page) }}">
+              <a class="pagination-link" href="{{ url_for('main.logs', page=pagination.next_num, filter_date=filter_date, filter_month=filter_month, search_query=search_query, per_page=per_page) }}">
                 Next <i class="fas fa-angle-right"></i>
               </a>
             </li>
             <li class="pagination-item">
-              <a class="pagination-link" href="{{ url_for('main.logs', page=pagination.pages, filter_date=filter_date, search_query=search_query, per_page=per_page) }}">
+              <a class="pagination-link" href="{{ url_for('main.logs', page=pagination.pages, filter_date=filter_date, filter_month=filter_month, search_query=search_query, per_page=per_page) }}">
                 Last <i class="fas fa-angle-double-right"></i>
               </a>
             </li>

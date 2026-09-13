@@ -112,7 +112,7 @@ def reset_password(token):
         flash("Your password has been reset. Please log in.", "success")
         return redirect(url_for('auth.login'))
     else:
-        # ✅ This block will catch and flash any form validation errors
+        # This block will catch and flash any form validation errors
         for field, errors in form.errors.items():
             for error in errors:
                 flash(f"{error}", "danger")

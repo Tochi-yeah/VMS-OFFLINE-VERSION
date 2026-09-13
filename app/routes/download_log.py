@@ -1,6 +1,11 @@
+# app/routes/download_log.py
+#
+# Exports the visitor log table to an Excel (.xlsx) file, honoring the same
+# search/date/month filters used on the Logs page.
+
 from flask import request, Response, Blueprint
 from app.models import VisitorLog, db, User
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy import func, case
 from sqlalchemy.orm import aliased
 import openpyxl
@@ -10,12 +15,19 @@ import pytz
 
 bp = Blueprint('download_log', __name__)
 
+
 @bp.route('/export-logs-excel')
 def export_logs_excel():
+    """Build an Excel workbook of visitor logs matching the current filters."""
     filter_date = request.args.get('filter_date')
+    filter_month = request.args.get('filter_month')
     search_query = request.args.get('search_query')
 
-    # --- Database Query (same as your logs page) ---
+    manila_tz = pytz.timezone('Asia/Manila')
+
+    # One row per visitor session, with check-in/check-out details and the
+    # usernames of the staff who handled each step. This mirrors the query
+    # used on the Logs page so exports match what's shown on screen.
     U_checkin = aliased(User, name='u_checkin')
     U_checkout = aliased(User, name='u_checkout')
     U_approved = aliased(User, name='u_approved')
@@ -50,23 +62,58 @@ def export_logs_excel():
     )
 
     if filter_date:
+        # Filter to sessions whose most recent activity falls on this single
+        # Manila calendar day. The day's boundaries are computed in Manila
+        # time and converted to UTC, then compared directly against the UTC
+        # timestamp column — this avoids relying on the database's own
+        # timezone-conversion function, which can behave inconsistently
+        # depending on how the timestamp column is stored.
         try:
             date_obj = datetime.strptime(filter_date, "%Y-%m-%d").date()
-            query = query.having(func.date(func.timezone('Asia/Manila', func.max(VisitorLog.timestamp))) == date_obj)
+            start_of_day = manila_tz.localize(datetime.combine(date_obj, datetime.min.time()))
+            end_of_day = start_of_day + timedelta(days=1)
+            start_utc = start_of_day.astimezone(pytz.utc)
+            end_utc = end_of_day.astimezone(pytz.utc)
+            query = query.having(
+                func.max(VisitorLog.timestamp) >= start_utc,
+                func.max(VisitorLog.timestamp) < end_utc
+            )
         except ValueError:
-            pass 
+            pass
+    elif filter_month:
+        # Same approach as the single-day filter above, but for the whole
+        # Manila calendar month: compute the month's start/end in Manila
+        # time, convert to UTC, and compare the timestamp against that
+        # range directly. This replaces the previous approach of extracting
+        # the year/month from a database-side timezone conversion, which
+        # could return the wrong month depending on how timestamps are
+        # stored — the same bug that was fixed on the Logs page.
+        try:
+            year, month = map(int, filter_month.split('-'))
+            start_of_month = manila_tz.localize(datetime(year, month, 1))
+            if month == 12:
+                end_of_month = manila_tz.localize(datetime(year + 1, 1, 1))
+            else:
+                end_of_month = manila_tz.localize(datetime(year, month + 1, 1))
+            start_utc = start_of_month.astimezone(pytz.utc)
+            end_utc = end_of_month.astimezone(pytz.utc)
+            query = query.having(
+                func.max(VisitorLog.timestamp) >= start_utc,
+                func.max(VisitorLog.timestamp) < end_utc
+            )
+        except ValueError:
+            pass
 
     if search_query:
         query = query.filter(VisitorLog.name.ilike(f"%{search_query}%"))
 
     logs = query.order_by(func.max(VisitorLog.timestamp).desc()).all()
 
-    # --- Excel File Generation ---
+    # Build the workbook and header row.
     workbook = openpyxl.Workbook()
     sheet = workbook.active
     sheet.title = "Visitor Logs"
 
-    # Define headers
     headers = [
         "Name", "Email", "Number", "Purpose", "Address",
         "Approved By", "Check-In Time", "Check-In Gate", "Checked-In By",
@@ -74,18 +121,17 @@ def export_logs_excel():
     ]
     sheet.append(headers)
 
-    # Style headers
     for cell in sheet[1]:
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal='center')
 
-    # Add data rows
-    manila_tz = pytz.timezone('Asia/Manila')
+    # Write one row per visitor session, converting timestamps to Manila
+    # time for display since they're stored in UTC.
     for log in logs:
         check_in_time = log.check_in_time.astimezone(manila_tz).strftime('%I:%M %p') if log.check_in_time else '—'
         check_out_time = log.check_out_time.astimezone(manila_tz).strftime('%I:%M %p') if log.check_out_time else '—'
         visit_date = log.visit_date.strftime('%B %d, %Y') if log.visit_date else '—'
-        
+
         row_data = [
             log.name, log.email, log.number, log.purpose, log.address,
             log.approved_by or '—',
@@ -99,26 +145,32 @@ def export_logs_excel():
         ]
         sheet.append(row_data)
 
-    # Adjust column widths
+    # Auto-size each column to fit its longest value.
     for col_cells in sheet.columns:
         max_length = 0
-        column = col_cells[0].column_letter 
+        column = col_cells[0].column_letter
         for cell in col_cells:
             try:
                 if len(str(cell.value)) > max_length:
                     max_length = len(cell.value)
-            except:
+            except TypeError:
                 pass
-        adjusted_width = (max_length + 2)
-        sheet.column_dimensions[column].width = adjusted_width
+        sheet.column_dimensions[column].width = max_length + 2
 
-    # Save to a memory buffer
+    # Save the workbook to an in-memory buffer so it can be streamed back
+    # as a download without writing a temp file to disk.
     excel_buffer = BytesIO()
     workbook.save(excel_buffer)
     excel_buffer.seek(0)
-    
-    # Create filename
-    filename_date = filter_date or datetime.now(manila_tz).strftime('%Y-%m-%d')
+
+    # Name the downloaded file after whichever filter was applied.
+    if filter_date:
+        filename_date = filter_date
+    elif filter_month:
+        filename_date = filter_month + "_Monthly"
+    else:
+        filename_date = datetime.now(manila_tz).strftime('%Y-%m-%d')
+
     filename = f"visitor_logs_{filename_date}.xlsx"
 
     return Response(

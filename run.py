@@ -1,4 +1,7 @@
 import os
+import sys
+import webbrowser
+from threading import Timer
 from app import create_app, socketio
 
 # ==========================================
@@ -10,7 +13,7 @@ DB_PASSWORD = "admin123"
 DB_USER = "postgres"
 DB_HOST = "127.0.0.1"          # 🛑 FIXED: Use IPv4 (127.0.0.1) to prevent IPv6 auth errors
 DB_PORT = "5432"
-DB_NAME = "Vms_offline"
+DB_NAME = "Vms-offline"
 
 # 2. INJECT INTO ENVIRONMENT
 # We force this into the system so __init__.py can find it
@@ -26,12 +29,17 @@ print("="*60)
 # ==========================================
 app = create_app()
 
+def open_browser():
+    webbrowser.open_new("http://127.0.0.1:5000")
+
 if __name__ == "__main__":
+    Timer(1.5, open_browser).start()
     socketio.run(
         app, 
         host="0.0.0.0", 
         port=5000, 
-        debug=True,        
+        debug=False,        
         use_reloader=False, # Keep False if you plan to convert this to an EXE later
         allow_unsafe_werkzeug=True
     )
+    

@@ -26,7 +26,7 @@ def create_account():
     password = request.form.get("new_password", "")
     confirm_password = request.form.get("confirm_password", "")
     role = request.form.get("role", "user")
-    gate_role = request.form.get("gate_role", "").strip()  # ✅ added
+    gate_role = request.form.get("gate_role", "").strip()  
 
     # Basic validation
     if not username or not email or not password or not confirm_password:
@@ -51,7 +51,7 @@ def create_account():
         email=email,
         password_hash=generate_password_hash(password),
         role=role,
-        gate_role=gate_role if gate_role else None   # ✅ save gate role
+        gate_role=gate_role if gate_role else None  
     )
     db.session.add(new_user)
     db.session.commit()
@@ -74,7 +74,7 @@ def update_profile():
     new_email = request.form.get("email", "").strip()
     new_password = request.form.get("password", "")
     confirm_password = request.form.get("confirm_password", "")
-    new_gate_role = request.form.get("gate_role", "").strip()  # ✅ new
+    new_gate_role = request.form.get("gate_role", "").strip()  
 
     # Check for duplicate email or username (if changed)
     if new_email != user.email and User.query.filter_by(email=new_email).first():
@@ -89,7 +89,7 @@ def update_profile():
         flash("Passwords do not match.", "danger")
         return redirect(url_for('main.setting'))
 
-    # ✅ Update gate role if provided
+    # Update gate role if provided
     if new_gate_role:
         user.gate_role = new_gate_role
 

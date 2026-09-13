@@ -22,7 +22,7 @@ def scan_checkin():
 
     code = (data.get("qr_data") or "").strip()
     purpose_from_modal = data.get("purpose")
-    # ✅ NEW: Get destination from the modal
+    # NEW: Get destination from the modal
     destination_from_modal = data.get("destination") 
 
     if not code:
@@ -42,7 +42,7 @@ def scan_checkin():
         if not target_visitor:
             return jsonify({"message": "Code not recognized."}), 404
 
-        # ✅ Update last purpose AND destination
+        # Update last purpose AND destination
         target_visitor.last_purpose = purpose_from_modal
         if destination_from_modal:
             target_visitor.last_destination = destination_from_modal
@@ -68,7 +68,7 @@ def scan_checkin():
             return jsonify({"message": f"{visitor.name} {action}."})
         
         # Otherwise ALWAYS show the purpose modal for individual check-ins
-        # ✅ Return existing destination to pre-fill the modal if you want (optional)
+        # Return existing destination to pre-fill the modal if you want (optional)
         return jsonify({
             "action": "show_modal", 
             "name": visitor.name, 
@@ -131,7 +131,7 @@ def _find_or_create_visitor(req):
             number=req.number,
             qr_code=req.unique_code,
             last_purpose=req.purpose,
-            # ✅ NEW: Save destination from Request to Visitor history
+            # Save destination from Request to Visitor history
             last_destination=getattr(req, "destination", "General"),
             last_address=getattr(req, "address", None)
         )
@@ -160,7 +160,7 @@ def _process_single_visitor(visitor, used_code, approved_by_id=None, commit=True
             email=visitor.email,
             number=visitor.number,
             purpose=visitor.last_purpose,
-            # ✅ NEW: Use the updated destination
+            # Use the updated destination
             destination=visitor.last_destination, 
             address=visitor.last_address,
             status="Checked-In",
@@ -179,7 +179,7 @@ def _process_single_visitor(visitor, used_code, approved_by_id=None, commit=True
             email=visitor.email,
             number=visitor.number,
             purpose=last_log.purpose,
-            # ✅ NEW: Copy destination from previous log (or visitor history)
+            # Copy destination from previous log (or visitor history)
             destination=getattr(last_log, "destination", visitor.last_destination), 
             address=last_log.address,
             status="Checked-Out",

@@ -1,5 +1,7 @@
 # app/routes/request.py
-# This version sends emails directly (synchronously) without using background threads.
+# Handles visitor registration (single, multi, and bulk CSV/Excel upload),
+# the Request list page, and direct check-in from that list. Emails are
+# sent synchronously via Brevo, without background threads.
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, session
 from flask_login import current_user, login_required
@@ -7,7 +9,7 @@ from app.models import db, Request, Visitor, VisitorLog
 from app.utils.helpers import generate_unique_secure_code, get_current_time
 from app.brevo_mailer import send_visitor_qr_email, send_group_qr_email
 from app import csrf, socketio, limiter
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 from werkzeug.utils import secure_filename
 import pytz
@@ -17,46 +19,107 @@ import secrets
 
 bp = Blueprint('request_bp', __name__)
 
+
 @bp.route("/request")
 @login_required
 def request_page():
+    """Show the paginated, searchable, filterable list of visitor requests."""
     search_query = request.args.get("search_query", "").strip()
     filter_date_str = request.args.get("filter_date")
-    # Get the page number from URL arguments, default to 1
+    filter_month_str = request.args.get("filter_month")
     page = request.args.get('page', 1, type=int)
-    
-    # --- ADDED: LOGIC TO REMEMBER PER_PAGE SETTING ---
+
+    # Remember the visitor's preferred page size across requests, and reuse
+    # it if they don't explicitly pass a new one.
     per_page_from_request = request.args.get("per_page")
     if per_page_from_request:
         session['per_page'] = int(per_page_from_request)
     per_page = session.get('per_page', 10)
-    # --- END OF ADDED LOGIC ---
+
+    manila_tz = pytz.timezone("Asia/Manila")
+    now_manila = get_current_time()
 
     query = Request.query
+
     if filter_date_str:
+        # Filter to requests submitted on this single Manila calendar day.
+        # The day's boundaries are computed in Manila time and converted to
+        # UTC, then compared directly against the UTC timestamp column —
+        # this avoids relying on the database's own timezone-conversion
+        # function, which can behave inconsistently depending on how the
+        # timestamp column is stored.
         try:
             target_date = datetime.strptime(filter_date_str, "%Y-%m-%d").date()
-            query = query.filter(db.func.date(db.func.timezone('Asia/Manila', Request.timestamp)) == target_date)
+            start_of_day = manila_tz.localize(datetime.combine(target_date, datetime.min.time()))
+            end_of_day = start_of_day + timedelta(days=1)
+            start_utc = start_of_day.astimezone(pytz.utc)
+            end_utc = end_of_day.astimezone(pytz.utc)
+            query = query.filter(
+                Request.timestamp >= start_utc,
+                Request.timestamp < end_utc
+            )
         except ValueError:
-            pass
-    elif filter_date_str is None:
-        today = get_current_time().date()
-        query = query.filter(db.func.date(db.func.timezone('Asia/Manila', Request.timestamp)) == today)
-    
+            flash("Invalid date format.", "danger")
+    elif filter_month_str:
+        # Same approach as the single-day filter above, but for the whole
+        # Manila calendar month: compute the month's start/end in Manila
+        # time, convert to UTC, and compare the timestamp against that
+        # range directly.
+        try:
+            year, month = map(int, filter_month_str.split('-'))
+            start_of_month = manila_tz.localize(datetime(year, month, 1))
+            if month == 12:
+                end_of_month = manila_tz.localize(datetime(year + 1, 1, 1))
+            else:
+                end_of_month = manila_tz.localize(datetime(year, month + 1, 1))
+            start_utc = start_of_month.astimezone(pytz.utc)
+            end_utc = end_of_month.astimezone(pytz.utc)
+            query = query.filter(
+                Request.timestamp >= start_utc,
+                Request.timestamp < end_utc
+            )
+        except ValueError:
+            flash("Invalid month format.", "danger")
+    else:
+        # With no date/month filter, default to showing only today's
+        # requests rather than the entire request history.
+        today_date = now_manila.date()
+        start_of_day = manila_tz.localize(datetime.combine(today_date, datetime.min.time()))
+        end_of_day = start_of_day + timedelta(days=1)
+        start_utc = start_of_day.astimezone(pytz.utc)
+        end_utc = end_of_day.astimezone(pytz.utc)
+        query = query.filter(
+            Request.timestamp >= start_utc,
+            Request.timestamp < end_utc
+        )
+
     if search_query:
         query = query.filter(Request.name.ilike(f"%{search_query}%"))
-    
-    # MODIFIED: Use paginate() instead of all()
+
     pagination = query.order_by(Request.timestamp.desc()).paginate(page=page, per_page=per_page, error_out=False)
     all_matching_requests = pagination.items
 
+    # Work out which of the requests on this page are currently checked in,
+    # by looking at each unique_code's most recent log entry.
     checked_in_codes = set()
     if all_matching_requests:
         unique_codes = [req.unique_code for req in all_matching_requests]
-        subquery = db.session.query(VisitorLog.unique_code, db.func.max(VisitorLog.timestamp).label('max_timestamp')).filter(VisitorLog.unique_code.in_(unique_codes)).group_by(VisitorLog.unique_code).subquery()
-        checked_in_logs = db.session.query(VisitorLog.unique_code).join(subquery, db.and_(VisitorLog.unique_code == subquery.c.unique_code, VisitorLog.timestamp == subquery.c.max_timestamp)).filter(VisitorLog.status == 'Checked-In').all()
+        subquery = db.session.query(
+            VisitorLog.unique_code,
+            db.func.max(VisitorLog.timestamp).label('max_timestamp')
+        ).filter(VisitorLog.unique_code.in_(unique_codes)).group_by(VisitorLog.unique_code).subquery()
+        checked_in_logs = db.session.query(VisitorLog.unique_code).join(
+            subquery,
+            db.and_(
+                VisitorLog.unique_code == subquery.c.unique_code,
+                VisitorLog.timestamp == subquery.c.max_timestamp
+            )
+        ).filter(VisitorLog.status == 'Checked-In').all()
         checked_in_codes = {log.unique_code for log in checked_in_logs}
 
+    # Group requests by group_code so the template can render group rows
+    # with their members nested underneath, and treat ungrouped requests
+    # as their own single-member group.
     grouped_requests = defaultdict(list)
     for req in all_matching_requests:
         if req.group_code:
@@ -70,43 +133,52 @@ def request_page():
         checked_in_codes=checked_in_codes,
         search_query=search_query,
         filter_date=filter_date_str,
-        pagination=pagination  # Pass the pagination object to the template
+        filter_month=filter_month_str,
+        pagination=pagination
     )
+
 
 @bp.route("/Visitor-register-form")
 def online_reg():
+    """Render the public single-visitor registration form."""
     return render_template("Visitor-register.html")
+
 
 @bp.route("/help-faq")
 def public_help():
-    return render_template("public_help.html")   
+    """Render the public visitor-facing FAQ page."""
+    return render_template("public_help.html")
+
 
 @bp.route("/registration-success")
 def registration_success():
-    # Get data from the session, or redirect if accessed directly
+    """Show the QR code for a visitor who just registered."""
     unique_code = session.pop('reg_success_code', None)
     name = session.pop('reg_success_name', None)
     email = session.pop('reg_success_email', None)
 
     if not unique_code or not name:
-        # If no code/name, they didn't just register. Send them back.
+        # No registration data in the session means this page was opened
+        # directly rather than reached right after registering.
         return redirect(url_for('request_bp.online_reg'))
 
     return render_template(
-        "registration_success.html", 
-        unique_code=unique_code, 
-        name=name, 
+        "registration_success.html",
+        unique_code=unique_code,
+        name=name,
         email=email
     )
 
+
 @bp.route("/multi-registration-success")
 def multi_registration_success():
-    # Get data from the session
+    """Show the QR codes for a group that just registered."""
     visitors = session.pop('multi_reg_visitors', None)
     group_code = session.pop('multi_reg_group_code', None)
 
     if not visitors:
-        # If no visitor data, they didn't just register. Send them back.
+        # No registration data in the session means this page was opened
+        # directly rather than reached right after registering.
         return redirect(url_for('request_bp.multi_form_entry'))
 
     return render_template(
@@ -115,11 +187,12 @@ def multi_registration_success():
         group_code=group_code
     )
 
-# ✅ UPDATED: submit_request (Added destination)
+
 @bp.route("/submit-request", methods=["POST"])
 @csrf.exempt
 @limiter.exempt
 def submit_request():
+    """Handle the public single-visitor registration form submission."""
     first_name = request.form.get("first_name", "").strip()
     middle_initial_raw = request.form.get("middle_initial", "").strip()
     last_name = request.form.get("last_name", "").strip()
@@ -134,18 +207,16 @@ def submit_request():
         return redirect(url_for('request_bp.online_reg'))
 
     number = request.form.get("cell_number", "").strip()
-    
-    # Purpose Logic
+
+    # If "Other" was picked from the purpose dropdown, use the free-text
+    # value the visitor typed in instead.
     purpose = request.form.get("purpose", "").strip()
     if purpose == "Other":
         purpose = request.form.get("other_purpose", "").strip()
-    
-    # 🆕 NEW: Destination Logic
+
     destination = request.form.get("destination", "").strip()
-    
     address = request.form.get("address", "").strip()
 
-    # Validate all fields including destination
     if not all([first_name, last_name, number, purpose, destination, address]):
         flash("Please fill out all required fields.", "danger")
         return redirect(url_for('request_bp.online_reg'))
@@ -153,7 +224,7 @@ def submit_request():
     unique_code = generate_unique_secure_code()
     new_request = Request(
         name=full_name, email=email, number=number, purpose=purpose,
-        destination=destination, # <--- Added here
+        destination=destination,
         address=address, unique_code=unique_code, status="Approve",
         timestamp=datetime.utcnow()
     )
@@ -176,10 +247,10 @@ def submit_request():
     return redirect(url_for('request_bp.registration_success'))
 
 
-# ✅ UPDATED: direct_checkin (Saves destination to logs)
 @bp.route("/direct-checkin/<int:request_id>", methods=["POST"])
 @login_required
 def direct_checkin(request_id):
+    """Check in a single visitor straight from their row on the Request page."""
     req = Request.query.get_or_404(request_id)
 
     last_log = VisitorLog.query.filter_by(unique_code=req.unique_code).order_by(VisitorLog.timestamp.desc()).first()
@@ -187,19 +258,21 @@ def direct_checkin(request_id):
         flash(f"{req.name} is already checked in.", "warning")
         return redirect(url_for('request_bp.request_page'))
 
+    # Find or create the permanent visitor record, and keep its "last
+    # known" details in sync with this request.
     visitor = Visitor.query.filter_by(name=req.name, number=req.number).first()
     if not visitor:
         visitor = Visitor(
-            name=req.name, email=req.email, number=req.number, qr_code=req.unique_code, 
-            last_purpose=req.purpose, 
-            last_destination=req.destination, # <--- Added here
+            name=req.name, email=req.email, number=req.number, qr_code=req.unique_code,
+            last_purpose=req.purpose,
+            last_destination=req.destination,
             last_address=req.address
         )
         db.session.add(visitor)
         db.session.flush()
     else:
         visitor.last_purpose = req.purpose
-        visitor.last_destination = req.destination # <--- Update here
+        visitor.last_destination = req.destination
         visitor.last_address = req.address
 
     new_log = VisitorLog(
@@ -208,7 +281,7 @@ def direct_checkin(request_id):
         email=visitor.email,
         number=visitor.number,
         purpose=req.purpose,
-        destination=req.destination, # <--- Added here
+        destination=req.destination,
         address=req.address,
         status="Checked-In",
         unique_code=req.unique_code,
@@ -226,10 +299,10 @@ def direct_checkin(request_id):
     return redirect(url_for('request_bp.request_page'))
 
 
-# ✅ UPDATED: direct_checkin_group (Saves destination to logs)
 @bp.route("/direct-checkin-group/<group_code>", methods=["POST"])
 @login_required
 def direct_checkin_group(group_code):
+    """Check in every not-yet-checked-in member of a group at once."""
     group_requests = Request.query.filter_by(group_code=group_code).all()
     checked_in_count = 0
     for req in group_requests:
@@ -241,21 +314,21 @@ def direct_checkin_group(group_code):
         if not visitor:
             visitor = Visitor(
                 name=req.name, email=req.email, number=req.number,
-                qr_code=req.unique_code, last_purpose=req.purpose, 
-                last_destination=req.destination, # <--- Added here
+                qr_code=req.unique_code, last_purpose=req.purpose,
+                last_destination=req.destination,
                 last_address=req.address
             )
             db.session.add(visitor)
             db.session.flush()
         else:
             visitor.last_purpose = req.purpose
-            visitor.last_destination = req.destination # <--- Update here
+            visitor.last_destination = req.destination
             visitor.last_address = req.address
 
         new_log = VisitorLog(
             visitor_id=visitor.id, name=visitor.name, email=visitor.email,
-            number=visitor.number, purpose=req.purpose, 
-            destination=req.destination, # <--- Added here
+            number=visitor.number, purpose=req.purpose,
+            destination=req.destination,
             address=req.address,
             status="Checked-In", unique_code=req.unique_code,
             visit_session_id=str(uuid.uuid4()), timestamp=datetime.utcnow(),
@@ -264,7 +337,7 @@ def direct_checkin_group(group_code):
         )
         db.session.add(new_log)
         checked_in_count += 1
-    
+
     db.session.commit()
     flash(f"{checked_in_count} new members of group {group_code} have been checked in.", "success")
     socketio.emit('dashboard_update')
@@ -272,55 +345,60 @@ def direct_checkin_group(group_code):
     return redirect(url_for('request_bp.request_page'))
 
 
-# ✅ UPDATED: multi_form_entry (Added destination loop)
 @bp.route('/Multi-form-entry', methods=['GET', 'POST'])
 @limiter.exempt
 @csrf.exempt
 def multi_form_entry():
+    """Render the multi-visitor registration form, and handle its submission."""
     if request.method == 'POST':
         created = []
         idx = 1
-        group_code = None 
+        group_code = None
 
+        # Each visitor's fields are suffixed with their index (e.g.
+        # first_name_1, first_name_2, ...). Keep reading indexes until one
+        # has no first name, which marks the end of the submitted rows.
         while True:
             first = request.form.get(f"first_name_{idx}", "").strip()
-            if not first: break
+            if not first:
+                break
             middle_raw = request.form.get(f"middle_initial_{idx}", "").strip()
             middle = (middle_raw[0].upper() + ".") if middle_raw else ""
             last = request.form.get(f"last_name_{idx}", "").strip()
             phone = request.form.get(f"phone_{idx}", "").strip()
             no_email = request.form.get(f"no_email_{idx}")
             email = "" if no_email else request.form.get(f"email_{idx}", "").strip()
-            
-            # Purpose Logic
+
+            # If "Other" was picked from the purpose dropdown, use the
+            # free-text value the visitor typed in instead.
             purpose = request.form.get(f"purpose_{idx}", "").strip()
             if purpose == "Other":
                 other = request.form.get(f"other_purpose_{idx}", "").strip()
-                if other: purpose = other
-            
-            # 🆕 Destination Logic
+                if other:
+                    purpose = other
+
             destination = request.form.get(f"destination_{idx}", "").strip()
-            
             address = request.form.get(f"address_{idx}", "").strip()
-            
-            # Added destination to validation
+
             if not all([first, last, phone, purpose, destination, address]):
                 idx += 1
                 continue
-            
+
             full_name = f"{first} {middle+' ' if middle else ''}{last}".strip()
             unique_code = generate_unique_secure_code()
             new_request = Request(
-                name=full_name, email=email, number=phone, purpose=purpose, 
-                destination=destination, # <--- Added here
+                name=full_name, email=email, number=phone, purpose=purpose,
+                destination=destination,
                 address=address,
                 unique_code=unique_code, status="Approve", timestamp=datetime.utcnow()
             )
             db.session.add(new_request)
             created.append(new_request)
             idx += 1
-        
+
         if created:
+            # More than one visitor means this is a group; tag them all
+            # with a shared group_code so they can be checked in together.
             if len(created) > 1:
                 group_code = generate_unique_secure_code()
                 for r in created:
@@ -355,39 +433,45 @@ def multi_form_entry():
     return render_template("Multi-form-entry.html")
 
 
-# ✅ UPDATED: upload_csv (Added Destination column read)
 @bp.route("/upload_csv", methods=["POST"])
 @csrf.exempt
 def upload_csv():
+    """Bulk-register visitors from an uploaded CSV or Excel file."""
     file = request.files.get("file")
     if not file:
         flash("No file selected.", "danger")
         return redirect(url_for("request_bp.request_page"))
+
     filename = secure_filename(file.filename)
     ext = filename.rsplit(".", 1)[-1].lower()
     try:
-        if ext == "csv": df = pd.read_csv(file)
-        elif ext in ["xlsx", "xls"]: df = pd.read_excel(file)
+        if ext == "csv":
+            df = pd.read_csv(file)
+        elif ext in ["xlsx", "xls"]:
+            df = pd.read_excel(file)
         else:
             flash("Invalid file format. Please upload a CSV or Excel file.", "danger")
             return redirect(url_for("request_bp.request_page"))
     except Exception as e:
         flash(f"Failed to process file: {str(e)}", "danger")
         return redirect(url_for("request_bp.request_page"))
+
     created_requests = []
     group_code = secrets.token_urlsafe(12)
     for _, row in df.iterrows():
         full_name = str(row.get("Name", "")).strip()
-        if not full_name: continue
+        if not full_name:
+            continue
         new_request = Request(
             name=full_name, email=str(row.get("Email", "")).strip(), number=str(row.get("Phone", "")).strip(),
-            purpose=str(row.get("Purpose", "")).strip(), 
-            destination=str(row.get("Destination", "")).strip(), # <--- Added here (Ensure CSV has "Destination" column)
+            purpose=str(row.get("Purpose", "")).strip(),
+            destination=str(row.get("Destination", "")).strip(),  # the uploaded file must include a "Destination" column
             address=str(row.get("Address", "")).strip(),
             unique_code=generate_unique_secure_code(), status="Approve",
             timestamp=datetime.utcnow(), group_code=group_code
         )
         created_requests.append(new_request)
+
     if created_requests:
         db.session.add_all(created_requests)
         db.session.commit()

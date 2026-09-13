@@ -4,12 +4,12 @@ from app import create_app, socketio
 # ==========================================
 # 🔧 POSTGRESQL CONFIGURATION
 # ==========================================
-DB_PASSWORD = "hopelessCsguy"  # <--- PUT YOUR PGADMIN PASSWORD HERE
+DB_PASSWORD = "admin123"  # <--- PUT YOUR PGADMIN PASSWORD HERE
 
 DB_USER = "postgres"
-DB_HOST = "localhost"
+DB_HOST = "127.0.0.1"
 DB_PORT = "5432"
-DB_NAME = "vms_offline"
+DB_NAME = "Vms_offline"
 
 # Build the connection string
 pg_db_url = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"

@@ -57,16 +57,16 @@ class VisitorLog(db.Model):
     timestamp = db.Column(TIMESTAMP(timezone=True), nullable=False)
     unique_code = db.Column(db.String(10))
     visit_session_id = db.Column(db.String(50), nullable=True)
-     # ✅ Who approved / scanned
+     # Who approved / scanned
     approved_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     check_in_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     check_out_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
 
-    # ✅ Store explicit gate role at the time of scan
+    # Store explicit gate role at the time of scan
     check_in_gate = db.Column(db.String(50), nullable=True)
     check_out_gate = db.Column(db.String(50), nullable=True)
 
-    # ✅ Explicit timestamps
+    # Explicit timestamps
     #check_in_time = db.Column(TIMESTAMP(timezone=True), nullable=True)
     #check_out_time = db.Column(TIMESTAMP(timezone=True), nullable=True)
 
@@ -95,7 +95,7 @@ class User(UserMixin, db.Model):
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
- # ✅ Flask-Login user loader
+ # Flask-Login user loader
 @login_manager.user_loader
 def load_user(user_id):
     # Always fetch from DB so gate_role is up to date

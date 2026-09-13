@@ -10,16 +10,11 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_socketio import SocketIO
 from flask_login import LoginManager
+from dateutil import parser  # Kept this as it is used in your custom filter
 
-# --- CRITICAL IMPORTS FOR THE FIX ---
+# --- POSTGRESQL IMPORTS ---
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool  # <--- Disables Connection Pooling
-import sqlite3
-import pytz
-from datetime import datetime
-from dateutil import parser
-# -------------------------------
 
 load_dotenv()
 
@@ -42,54 +37,41 @@ def create_app():
         static_dir = os.path.join(base_dir, 'app', 'static')
     else:
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        
         if os.path.exists(os.path.join(base_dir, 'templates')):
-            template_dir = os.path.join(base_dir, 'templates')
-            static_dir = os.path.join(base_dir, 'static')
+             template_dir = os.path.join(base_dir, 'templates')
+             static_dir = os.path.join(base_dir, 'static')
         else:
-            template_dir = os.path.join(base_dir, '..', 'templates')
-            static_dir = os.path.join(base_dir, '..', 'static')
+             template_dir = os.path.join(base_dir, 'app', 'templates')
+             static_dir = os.path.join(base_dir, 'app', 'static')
 
     app = Flask(__name__, template_folder=template_dir, static_folder=static_dir)
-    
-# ---------------------------------------------------------
-    # 2. DATABASE CONFIGURATION
+
     # ---------------------------------------------------------
-    app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-key-offline')
+    # 2. CONFIGURATION
+    # ---------------------------------------------------------
+    app.config['SECRET_KEY'] = os.getenv("SECRET_KEY", "dev-key-123")
     
-    # Check if an external script (like debug_offline.py) provided a database
-    custom_db_url = os.environ.get('DATABASE_URL')
+    # DATABASE CONNECTION (Pulls from run.py or .env)
+    app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL")
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app.config['RATELIMIT_STORAGE_URI'] = os.getenv("REDIS_URL", "memory://")
 
-    if custom_db_url:
-        # ✅ CASE 1: Custom Database (PostgreSQL) detected
-        app.config['SQLALCHEMY_DATABASE_URI'] = custom_db_url
-        print(f"⚙️ CUSTOM CONFIG: Using External Database -> {custom_db_url}")
-    
-    elif getattr(sys, 'frozen', False):
-        # 🧊 CASE 2: Frozen Mode (.exe) - Uses Internal SQLite
-        exe_folder = os.path.dirname(sys.executable)
-        db_path = os.path.join(exe_folder, 'vms_offline.db')
-        app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
-        print(f"🔄 OFFLINE MODE: Using database at {db_path}")
-        
-    else:
-        # 🛠️ CASE 3: Standard Debug Mode - Uses Project Root SQLite
-        project_root = os.path.abspath(os.path.join(base_dir, '..'))
-        db_path = os.path.join(project_root, 'vms_offline.db')
-        app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
-        print(f"🛠️ DEBUG MODE: Using database at {db_path}")
-
-    # Initialize extensions
+    # Initialize Extensions
     db.init_app(app)
     migrate.init_app(app, db)
     csrf.init_app(app)
-    socketio.init_app(app)
     limiter.init_app(app)
+    socketio.init_app(app)
     login_manager.init_app(app)
 
+    # Rate Limiter defaults
     limiter.default_limits = ["100 per day", "20 per hour"]
 
+    # ---------------------------------------------------------
+    # 3. REGISTER BLUEPRINTS (YOUR ACTUAL ONES)
+    # ---------------------------------------------------------
     from app.routes import main, auth, request, scan, download_log, analytic, profile, download_template
+    
     app.register_blueprint(main.bp)
     app.register_blueprint(auth.bp)
     app.register_blueprint(request.bp)
@@ -99,6 +81,9 @@ def create_app():
     app.register_blueprint(profile.bp)
     app.register_blueprint(download_template.bp)
 
+    # ---------------------------------------------------------
+    # 4. CUSTOM FILTERS
+    # ---------------------------------------------------------
     from app.models import User
     from app.utils.helpers import convert_to_ph_time_only
     app.jinja_env.filters['ph_time_only'] = convert_to_ph_time_only
@@ -114,47 +99,15 @@ def create_app():
             except: return value
         return value.strftime(format)
 
-   # CORRECTED: Commented out for PostgreSQL
-    # if getattr(sys, 'frozen', False):
-    #     with app.app_context():
-    #         db.create_all()
-    #         # Force WAL mode for EXE as well
-    #         db.session.execute("PRAGMA journal_mode=WAL")
-    #         db.session.commit()
+    # ---------------------------------------------------------
+    # 5. DATABASE INITIALIZATION
+    # ---------------------------------------------------------
+    if getattr(sys, 'frozen', False):
+        with app.app_context():
+            db.create_all()
 
     @app.teardown_appcontext
     def shutdown_session(exception=None):
         db.session.remove()
 
     return app
-
-# =========================================================
-#  SQLITE CONFIGURATION (WAL MODE + FOREIGN KEYS)
-# =========================================================
-@event.listens_for(Engine, "connect")
-def set_sqlite_functions(dbapi_connection, connection_record):
-    if isinstance(dbapi_connection, sqlite3.Connection):
-        cursor = dbapi_connection.cursor()
-        
-        # ⚡ ENABLE WAL MODE (Fixes locking/phantom writes)
-        cursor.execute("PRAGMA journal_mode=WAL")
-        
-        # Enable Foreign Keys
-        cursor.execute("PRAGMA foreign_keys=ON")
-        
-        cursor.close()
-
-        def sql_timezone(zone, val):
-            if val is None: return None
-            try:
-                val_str = str(val)
-                dt = parser.parse(val_str)
-                if dt.tzinfo is None:
-                    dt = pytz.utc.localize(dt)
-                target_tz = pytz.timezone(zone)
-                local_dt = dt.astimezone(target_tz)
-                return local_dt.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                return val
-
-        dbapi_connection.create_function("timezone", 2, sql_timezone)
